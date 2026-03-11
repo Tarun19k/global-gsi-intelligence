@@ -43,7 +43,7 @@ VERSION_LOG = [
     {"version": "v3.2", "date": "2026-03-10", "notes": "Live auto-refresh via st.fragment — no full page reload"},
     {"version": "v3.3", "date": "2026-03-10", "notes": "Phase 3: forecast accuracy tracking + auto-correction logic"},
     {"version": "v3.5", "date": "2026-03-11", "notes": "Phase 4-5: nav realign, global tickers, top movers, dashboard reorder"},
-    {"version": "v4.0", "date": "2026-03-11", "notes": "609 tickers · 9 sections · ETFs, Commodities, Debt, Indices supported"},
+    {"version": "v4.1", "date": "2026-03-11", "notes": "Fully responsive UI — mobile/tablet/desktop CSS breakpoints + Plotly responsive config"},
 ]
 CURRENT_VERSION = VERSION_LOG[-1]["version"]
 
@@ -52,6 +52,13 @@ if "app_error_log" not in st.session_state:
 if "chatter_open"  not in st.session_state: st.session_state.chatter_open  = True
 if "chatter_topic" not in st.session_state: st.session_state.chatter_topic = "Global Markets"
 if "chatter_feeds" not in st.session_state: st.session_state.chatter_feeds = []
+
+
+def responsive_cols(desktop: int, tablet: int = None, mobile: int = 1):
+    """Return st.columns() appropriate for any screen — CSS handles stacking."""
+    # We always render desktop columns; CSS media queries handle visual stacking
+    return st.columns(desktop)
+
 
 def log_error(context: str, exc: Exception):
     entry = {
@@ -104,6 +111,135 @@ body,.main{background:#0e1117;}
   padding:10px 14px;margin:8px 0;font-size:0.80rem;color:#7a82a0;}
 .valid-badge{background:#0d2614;border:1px solid #1a4d24;border-radius:6px;
   padding:4px 10px;font-size:0.72rem;color:#4caf50;display:inline-block;margin-top:4px;}
+
+/* ═══════════════════════════════════════════
+   RESPONSIVE / DEVICE-FRIENDLY OVERRIDES
+   Mobile  : ≤ 768px
+   Tablet  : ≤ 1024px
+   Desktop : > 1024px
+═══════════════════════════════════════════ */
+
+/* Force viewport scale on mobile */
+@media screen and (max-width: 768px) {
+
+    /* Stack Streamlit columns vertically */
+    [data-testid="column"] {
+        width: 100% !important;
+        flex: 1 1 100% !important;
+        min-width: 100% !important;
+    }
+
+    /* KPI tiles: smaller, full-width */
+    .kpi-card {
+        padding: 10px 12px !important;
+        margin: 3px 0 !important;
+    }
+    .kpi-value  { font-size: 1.25rem !important; }
+    .kpi-label  { font-size: 0.65rem !important; }
+    .kpi-delta  { font-size: 0.72rem !important; }
+
+    /* Section titles smaller */
+    .section-title { font-size: 0.95rem !important; }
+
+    /* News cards readable on small screens */
+    .news-card    { padding: 9px 11px !important; }
+    .news-title   { font-size: 0.82rem !important; }
+    .news-meta    { font-size: 0.65rem !important; }
+    .news-sum     { font-size: 0.72rem !important; }
+
+    /* Insight / action boxes */
+    .insight-box, .action-box, .warn-box {
+        padding: 10px 12px !important;
+        font-size: 0.80rem !important;
+    }
+
+    /* Group badge */
+    .group-badge {
+        padding: 8px 10px !important;
+        font-size: 0.78rem !important;
+    }
+
+    /* Price ticker: slower scroll, smaller font */
+    .ticker-scroll { animation-duration: 80s !important; }
+
+    /* Plotly charts: reduce height on mobile */
+    [data-testid="stPlotlyChart"] > div {
+        height: 280px !important;
+        min-height: 220px !important;
+    }
+
+    /* Sidebar narrower */
+    [data-testid="stSidebar"] {
+        min-width: 260px !important;
+        max-width: 80vw !important;
+    }
+
+    /* Buttons full width */
+    [data-testid="stButton"] > button {
+        width: 100% !important;
+        font-size: 0.82rem !important;
+        padding: 8px 12px !important;
+    }
+
+    /* Selectbox full width */
+    [data-testid="stSelectbox"] {
+        width: 100% !important;
+    }
+
+    /* Radio buttons wrap on mobile */
+    [data-testid="stRadio"] > div {
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+    }
+
+    /* Reduce main padding */
+    .main .block-container {
+        padding: 1rem 0.75rem !important;
+        max-width: 100% !important;
+    }
+
+    /* Hero header font scaling */
+    div[style*="font-size:2rem"]   { font-size: 1.4rem !important; }
+    div[style*="font-size:1.85rem"]{ font-size: 1.3rem !important; }
+    div[style*="font-size:1.6rem"] { font-size: 1.2rem !important; }
+    div[style*="font-size:1.15rem"]{ font-size: 1.0rem !important; }
+}
+
+/* ── Tablet (769px – 1024px) ─────────────────────────────── */
+@media screen and (min-width: 769px) and (max-width: 1024px) {
+
+    [data-testid="column"] {
+        min-width: 45% !important;
+    }
+
+    .kpi-value  { font-size: 1.4rem !important; }
+
+    [data-testid="stPlotlyChart"] > div {
+        height: 340px !important;
+    }
+
+    .main .block-container {
+        padding: 1.2rem 1rem !important;
+    }
+}
+
+/* ── Touch targets: universally bigger hit areas ─────────── */
+@media (hover: none) and (pointer: coarse) {
+    [data-testid="stButton"] > button {
+        min-height: 44px !important;
+        font-size: 0.88rem !important;
+    }
+    [data-testid="stSelectbox"] select,
+    [data-testid="stMultiSelect"] {
+        min-height: 44px !important;
+    }
+    [data-testid="stCheckbox"] label {
+        min-height: 40px !important;
+        display: flex !important;
+        align-items: center !important;
+    }
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -1071,7 +1207,7 @@ def render_homepage(cb: int):
 
      # ── Quick-access feature cards ─────────────────────────────────────────────
      st.markdown("#### 🚀 Quick Access")
-     c1, c2, c3 = st.columns(3)
+     c1, c2, c3 = st.columns([1, 1, 1], gap="medium")
      cards = [
          (c1, "📊 Investor's Dashboard",
           "Live prices · 10 KPIs · Technical charts · Forecast · Compare · Insights",
@@ -1110,7 +1246,7 @@ def render_homepage(cb: int):
          "DAX":        "^GDAXI", "FTSE 100":   "^FTSE",
          "Hang Seng":  "^HSI",   "Nikkei 225": "^N225",
      }
-     idx_cols = st.columns(len(INDEX_MAP))
+     idx_cols = st.columns(min(len(INDEX_MAP), 6), gap="small")
      for col, (name, sym) in zip(idx_cols, INDEX_MAP.items()):
          try:
              d = safe_run(
@@ -1958,13 +2094,13 @@ else:
 st.markdown("<div class='section-title'>📐 KPI Signal Panel</div>", unsafe_allow_html=True)
 st.caption("Historical indicators (RSI, MACD, Bollinger etc.) update when you reload the page or change stock.")
 
-_cols1 = st.columns(4)
+_cols1 = st.columns(4, gap="small")
 kpi_tile(_cols1[0], "RSI (14 days)",    f"{rsi:.1f}",              r_c)
 kpi_tile(_cols1[1], "MACD Histogram",   f"{macdh:+.2f}",           m_c)
 kpi_tile(_cols1[2], "Bollinger Width",  f"{bbw:.1f}%",             "yellow")
 kpi_tile(_cols1[3], "ATR Volatility",   f"{atr:.1f}",              "yellow")
 
-_cols2 = st.columns(5)
+_cols2 = st.columns(5, gap="small")
 kpi_tile(_cols2[0], "ADX Trend",        f"{adx:.1f}",              a_c)
 kpi_tile(_cols2[1], "Stochastic %K",    f"{stoch:.1f}",            s_c)
 kpi_tile(_cols2[2], "P/E & P/B",        f"{pe:.1f} | {pb:.2f}x",  v_c)
@@ -2021,7 +2157,7 @@ with tab1:
     fig.update_yaxes(title_text="MACD",   row=2, col=1)
     fig.update_yaxes(title_text="RSI",    row=3, col=1)
     fig.update_yaxes(title_text="Volume", row=4, col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config={"responsive": True})
 
 # ── Tab 2: Forecast ──────────────────────────────────────────
 with tab2:
@@ -2069,9 +2205,9 @@ with tab2:
         font=dict(color="#c8cee8"), margin=dict(l=10,r=10,t=20,b=10))
     fig2.update_xaxes(title_text="Date")
     fig2.update_yaxes(title_text="Price")
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, use_container_width=True, config={"responsive": True})
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3 = st.columns([1, 1, 1], gap="medium")
     c1.metric("Current Price", f"{cur_sym}{price:,.2f}", f"{chg:+.2f}%")
     c2.metric(f"Target ({horizon})", f"{cur_sym}{target:,.0f}", f"{upside:+.1f}%")
     c3.metric("52-Week Range",
@@ -2116,7 +2252,7 @@ with tab3:
             font=dict(color="#c8cee8"), margin=dict(l=10,r=10,t=50,b=10))
         fig3.update_xaxes(title_text="Date")
         fig3.update_yaxes(title_text="Normalised (100=Start)")
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, use_container_width=True, config={"responsive": True})
 
         rows = []
         for nm, tk in zip(all_n, all_t):
@@ -2235,7 +2371,7 @@ if idx_data:
         font=dict(color="#c8cee8"), margin=dict(l=10,r=10,t=50,b=10))
     fig_idx.update_xaxes(title_text="Date")
     fig_idx.update_yaxes(title_text="Index (Base 100)")
-    st.plotly_chart(fig_idx, use_container_width=True)
+    st.plotly_chart(fig_idx, use_container_width=True, config={"responsive": True})
 
     idx_cols = st.columns(len(idx_data))
     for i, (nm, sym) in enumerate(idx_map.items()):
