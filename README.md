@@ -1,6 +1,6 @@
-# Global Stock Intelligence v4.0
+# Market Updates v4.0
 
-A real-time financial intelligence dashboard built with Streamlit.
+A real-time financial knowledge dashboard built with Streamlit.
 
 ## Features
 - 410 validated tickers across 9 sections (India, USA, Europe, China, ETFs, Commodities, Debt & Rates, Global Indices)
