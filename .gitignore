@@ -1,0 +1,12 @@
+# Runtime data — auto-created by the app, do NOT commit
+forecast_history.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
