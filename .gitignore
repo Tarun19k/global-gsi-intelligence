@@ -1,5 +1,6 @@
 # Runtime data — auto-created by the app, do NOT commit
 forecast_history.json
+dev_monitor.json
 
 # Python cache
 __pycache__/
