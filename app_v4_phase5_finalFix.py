@@ -2584,6 +2584,8 @@ with st.sidebar:
     st.markdown("---")
     render_version_log()
     render_error_log()
+    # Default auto-refresh ON if selected market is currently open
+    _ar_default  = bool(is_market_open(country))
     auto_refresh = st.checkbox("⏱ Auto-refresh (live when market open)",
                                value=_ar_default)
     st.caption(f"🕐 {datetime.now().strftime('%d %b %Y %H:%M')}")
@@ -2593,8 +2595,6 @@ with st.sidebar:
 #  COMPUTE MARKET STATUS + CACHE BUSTER  (before any data load)
 # ─────────────────────────────────────────────────────────────
 market_open     = is_market_open(country)
-# Default auto-refresh ON if selected market is currently open
-_ar_default  = bool(market_open)
 status_lbl, s_col = market_status_label(country)
 cb      = int(time.time() // 10) if (auto_refresh and market_open) else 0
 cur_sym = CURRENCY.get(country, "")
