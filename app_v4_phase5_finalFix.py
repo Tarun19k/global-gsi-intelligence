@@ -43,7 +43,7 @@ VERSION_LOG = [
     {"version": "v3.2", "date": "2026-03-10", "notes": "Live auto-refresh via st.fragment — no full page reload"},
     {"version": "v3.3", "date": "2026-03-10", "notes": "Phase 3: forecast accuracy tracking + auto-correction logic"},
     {"version": "v3.5", "date": "2026-03-11", "notes": "Phase 4-5: nav realign, global tickers, top movers, dashboard reorder"},
-    {"version": "v4.1", "date": "2026-03-11", "notes": "Fully responsive UI — mobile/tablet/desktop CSS breakpoints + Plotly responsive config"},
+    {"version": "v4.3", "date": "2026-03-11", "notes": "Dev Monitor + Insights Manager + welcome modal · responsive UI — mobile/tablet/desktop CSS breakpoints + Plotly responsive config"},
 ]
 CURRENT_VERSION = VERSION_LOG[-1]["version"]
 
@@ -1160,6 +1160,651 @@ def render_top_movers(
 # ─────────────────────────────────────────────────────────────
 #  HOMEPAGE
 # ─────────────────────────────────────────────────────────────
+
+# ── Welcome / Onboarding Modal ────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────
+#  DEV MONITOR CONSTANTS
+# ─────────────────────────────────────────────────────────────────
+DEV_MONITOR_FILE = "dev_monitor.json"
+ALERT_SEVERITY   = {"CRITICAL": "🔴", "WARNING": "🟡", "INFO": "🟢", "NOTICE": "🔵"}
+ALERT_COLORS     = {"CRITICAL": "ef5350", "WARNING": "ffd600", "INFO": "00c853", "NOTICE": "4f8ef7"}
+
+def _dm_load():
+    """Load persisted dev monitor log."""
+    if os.path.exists(DEV_MONITOR_FILE):
+        try:
+            with open(DEV_MONITOR_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"alerts": [], "runs": [], "stats": {}}
+
+def _dm_save(data: dict):
+    try:
+        with open(DEV_MONITOR_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        log_error("dm_save", e)
+
+def _dm_alert(data: dict, severity: str, category: str, message: str, detail: str = ""):
+    """Append a new alert and save."""
+    entry = {
+        "ts":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "severity": severity,
+        "category": category,
+        "message":  message,
+        "detail":   detail,
+        "read":     False,
+    }
+    data["alerts"].insert(0, entry)
+    data["alerts"] = data["alerts"][:200]   # keep last 200
+    _dm_save(data)
+    return entry
+
+def _dm_run_checks(ticker_data: dict) -> list:
+    """
+    Run all health + optimisation checks.
+    Returns list of (severity, category, message, detail) tuples.
+    """
+    findings = []
+    now      = datetime.now()
+
+    # ── CHECK 1: Ticker file loaded ───────────────────────────────
+    if not ticker_data:
+        findings.append(("CRITICAL", "Data",
+            "validated_tickers.json could not be loaded",
+            "App will show no tickers. Check file exists in repo root."))
+    else:
+        total = sum(len(v) for v in ticker_data.values())
+        findings.append(("INFO", "Data",
+            f"Ticker universe healthy — {total} tickers across {len(ticker_data)} sections",
+            ", ".join(f"{k}: {len(v)}" for k, v in ticker_data.items())))
+
+    # ── CHECK 2: Thin sections ────────────────────────────────────
+    for sec, tickers in ticker_data.items():
+        if len(tickers) < 10:
+            findings.append(("WARNING", "Coverage",
+                f"Thin section: '{sec}' has only {len(tickers)} tickers",
+                "Consider expanding this section for better screening results."))
+
+    # ── CHECK 3: Duplicate tickers across sections ────────────────
+    all_syms   = []
+    cross_dups = {}
+    for sec, tickers in ticker_data.items():
+        for name, sym in tickers.items():
+            all_syms.append((sym, sec))
+    sym_map = {}
+    for sym, sec in all_syms:
+        sym_map.setdefault(sym, []).append(sec)
+    cross_dups = {s: secs for s, secs in sym_map.items() if len(secs) > 1}
+    if cross_dups:
+        findings.append(("WARNING", "Data Quality",
+            f"{len(cross_dups)} ticker(s) appear in multiple sections",
+            "; ".join(f"{s} → {', '.join(v)}" for s, v in list(cross_dups.items())[:5])))
+    else:
+        findings.append(("INFO", "Data Quality",
+            "No cross-section ticker duplicates found", "All symbols unique across sections."))
+
+    # ── CHECK 4: Session error log ────────────────────────────────
+    err_log = st.session_state.get("app_error_log", [])
+    if len(err_log) > 10:
+        findings.append(("WARNING", "Runtime Errors",
+            f"{len(err_log)} errors in session error log",
+            f"Most recent: {err_log[0].get('context','?')} — {err_log[0].get('error','?')}"
+            if err_log else ""))
+    elif len(err_log) > 0:
+        findings.append(("NOTICE", "Runtime Errors",
+            f"{len(err_log)} minor error(s) logged this session",
+            f"Most recent: {err_log[0].get('context','?')}" if err_log else ""))
+    else:
+        findings.append(("INFO", "Runtime Errors",
+            "Zero errors in current session log", "App running cleanly."))
+
+    # ── CHECK 5: Fragment availability ───────────────────────────
+    has_frag = hasattr(st, "fragment")
+    if not has_frag:
+        findings.append(("WARNING", "Performance",
+            "st.fragment not available — live auto-refresh disabled",
+            "Upgrade Streamlit to ≥1.33 for fragment support. App falls back to full reruns."))
+    else:
+        findings.append(("INFO", "Performance",
+            "st.fragment available — live refresh active", "Auto-refresh fires every 5s when market is open."))
+
+    # ── CHECK 6: st.dialog availability ──────────────────────────
+    has_dialog = hasattr(st, "dialog")
+    if not has_dialog:
+        findings.append(("WARNING", "UX",
+            "st.dialog not available — welcome modal will not show",
+            "Upgrade Streamlit to ≥1.36 for dialog support."))
+    else:
+        findings.append(("INFO", "UX", "st.dialog available — welcome modal active", ""))
+
+    # ── CHECK 7: DEV_MONITOR_FILE writable ───────────────────────
+    try:
+        with open(DEV_MONITOR_FILE, "a") as _tf:
+            pass
+        findings.append(("INFO", "Storage",
+            "dev_monitor.json writable — alert persistence active", ""))
+    except Exception as e:
+        findings.append(("WARNING", "Storage",
+            "dev_monitor.json not writable — alerts stored in session only",
+            str(e)[:100]))
+
+    # ── CHECK 8: Streamlit version ────────────────────────────────
+    try:
+        import streamlit as _st
+        ver = getattr(_st, "__version__", "unknown")
+        parts = [int(x) for x in ver.split(".")[:2] if x.isdigit()]
+        if parts and (parts[0] < 1 or (parts[0] == 1 and parts[1] < 36)):
+            findings.append(("NOTICE", "Version",
+                f"Streamlit {ver} — some features need ≥1.36",
+                "Welcome modal (@st.dialog) needs 1.36+. Responsive gap= needs 1.33+."))
+        else:
+            findings.append(("INFO", "Version",
+                f"Streamlit {ver} — all features supported", ""))
+    except Exception:
+        findings.append(("NOTICE", "Version", "Could not read Streamlit version", ""))
+
+    # ── CHECK 9: Cache TTL alignment ─────────────────────────────
+    findings.append(("NOTICE", "Performance",
+        "Cache TTLs: price=3600s · news=120s · scores=900s · tickers=86400s",
+        "Consider reducing price TTL to 1800s during high-volatility sessions for fresher data."))
+
+    # ── CHECK 10: Time of run ─────────────────────────────────────
+    findings.append(("INFO", "System",
+        f"Health check completed at {now.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Checked {len(findings)} metrics."))
+
+    return findings
+
+def render_dev_monitor(ticker_data: dict):
+    """Developer health monitor with alert capture and analytics."""
+    import sys
+
+    st.markdown("""
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px">
+        <div style="font-size:1.5rem">🔧</div>
+        <div>
+            <div style="font-size:1.1rem;font-weight:900;color:#c8d6f0">Developer Monitor</div>
+            <div style="font-size:0.78rem;color:#4b6080">
+                Continuous app health · Optimisation alerts · Session analytics
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    dm_data  = _dm_load()
+    err_log  = list(st.session_state.get("app_error_log", []))
+    unread   = sum(1 for a in dm_data["alerts"] if not a.get("read", True))
+
+    # ── Control bar ───────────────────────────────────────────────
+    ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([2, 2, 2, 2], gap="small")
+    run_now   = ctrl1.button("▶  Run Health Check", type="primary",
+                              use_container_width=True)
+    clear_btn = ctrl2.button("🗑  Clear Alert Log",  use_container_width=True)
+    mark_read = ctrl3.button("✓  Mark All Read",    use_container_width=True)
+    export    = ctrl4.button("⬇  Export Log (JSON)",use_container_width=True)
+
+    if clear_btn:
+        dm_data["alerts"] = []
+        _dm_save(dm_data)
+        st.success("Alert log cleared.")
+        st.rerun()
+
+    if mark_read:
+        for a in dm_data["alerts"]:
+            a["read"] = True
+        _dm_save(dm_data)
+        st.rerun()
+
+    if export:
+        st.download_button("📥 Download dev_monitor.json",
+                           data=json.dumps(dm_data, indent=2),
+                           file_name="dev_monitor.json",
+                           mime="application/json")
+
+    # ── Run checks ───────────────────────────────────────────────
+    if run_now or not dm_data["alerts"]:
+        with st.spinner("Running health checks…"):
+            findings = _dm_run_checks(ticker_data)
+            run_entry = {
+                "ts":      datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "checks":  len(findings),
+                "critical":sum(1 for f in findings if f[0]=="CRITICAL"),
+                "warnings":sum(1 for f in findings if f[0]=="WARNING"),
+            }
+            dm_data["runs"].insert(0, run_entry)
+            dm_data["runs"] = dm_data["runs"][:50]
+            for sev, cat, msg, det in findings:
+                _dm_alert(dm_data, sev, cat, msg, det)
+            # Update stats
+            dm_data["stats"]["last_run"]    = run_entry["ts"]
+            dm_data["stats"]["total_runs"]  = dm_data["stats"].get("total_runs", 0) + 1
+            dm_data["stats"]["total_alerts"]= len(dm_data["alerts"])
+            _dm_save(dm_data)
+        st.rerun()
+
+    # ── KPI summary row ──────────────────────────────────────────
+    alerts     = dm_data.get("alerts", [])
+    n_critical = sum(1 for a in alerts if a["severity"]=="CRITICAL")
+    n_warn     = sum(1 for a in alerts if a["severity"]=="WARNING")
+    n_info     = sum(1 for a in alerts if a["severity"] in ("INFO","NOTICE"))
+    n_unread   = sum(1 for a in alerts if not a.get("read", True))
+    total_runs = dm_data.get("stats", {}).get("total_runs", 0)
+
+    mk1,mk2,mk3,mk4,mk5 = st.columns(5, gap="small")
+    for col, val, label, color in [
+        (mk1, n_critical, "Critical",   "ef5350"),
+        (mk2, n_warn,     "Warnings",   "ffd600"),
+        (mk3, n_info,     "Info/Notice","00c853"),
+        (mk4, n_unread,   "Unread",     "4f8ef7"),
+        (mk5, total_runs, "Total Runs", "9aa0b4"),
+    ]:
+        col.markdown(f"""
+        <div style="background:#0d1117;border:1px solid #{color}44;border-radius:10px;
+                    padding:12px;text-align:center">
+            <div style="font-size:1.5rem;font-weight:900;color:#{color}">{val}</div>
+            <div style="font-size:0.65rem;color:#4b6080;text-transform:uppercase;
+                        letter-spacing:1px;margin-top:3px">{label}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+    # ── Alert log ────────────────────────────────────────────────
+    tab_all, tab_crit, tab_warn, tab_runs = st.tabs([
+        f"All Alerts ({len(alerts)})",
+        f"🔴 Critical ({n_critical})",
+        f"🟡 Warnings ({n_warn})",
+        f"Run History ({total_runs})",
+    ])
+
+    def _render_alerts(items):
+        if not items:
+            st.info("No alerts in this category.")
+            return
+        for a in items[:50]:
+            col  = ALERT_COLORS.get(a["severity"], "4b6080")
+            icon = ALERT_SEVERITY.get(a["severity"], "⚪")
+            read_style = "opacity:0.55;" if a.get("read") else ""
+            st.markdown(f"""
+            <div style="{read_style}background:#0a0f1a;border-left:3px solid #{col};
+                         border-radius:0 8px 8px 0;padding:10px 14px;margin:5px 0">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                    <div style="font-size:0.80rem;font-weight:700;color:#{col}">
+                        {icon} [{a["category"]}] {a["message"]}
+                    </div>
+                    <div style="font-size:0.65rem;color:#3d5272;white-space:nowrap;
+                                margin-left:12px">{a["ts"]}</div>
+                </div>
+                {f'<div style="font-size:0.70rem;color:#4b6080;margin-top:4px">{a["detail"]}</div>' if a.get("detail") else ""}
+            </div>
+            """, unsafe_allow_html=True)
+
+    with tab_all:   _render_alerts(alerts)
+    with tab_crit:  _render_alerts([a for a in alerts if a["severity"]=="CRITICAL"])
+    with tab_warn:  _render_alerts([a for a in alerts if a["severity"]=="WARNING"])
+    with tab_runs:
+        if not dm_data.get("runs"):
+            st.info("No runs yet. Click ▶ Run Health Check.")
+        else:
+            st.dataframe(
+                __import__("pandas").DataFrame(dm_data["runs"]),
+                use_container_width=True, hide_index=True
+            )
+
+    # ── Session state inspector ───────────────────────────────────
+    with st.expander("🔍 Session State Inspector"):
+        ss_display = {k: str(v)[:120] for k, v in st.session_state.items()
+                      if not k.startswith("_")}
+        st.json(ss_display)
+
+    # ── Runtime error log ─────────────────────────────────────────
+    with st.expander(f"📋 Runtime Error Log ({len(err_log)} entries)"):
+        if not err_log:
+            st.success("No runtime errors this session.")
+        else:
+            import pandas as _pd
+            st.dataframe(_pd.DataFrame(err_log), use_container_width=True, hide_index=True)
+
+
+# ─────────────────────────────────────────────────────────────────
+#  INSIGHTS MANAGER
+# ─────────────────────────────────────────────────────────────────
+def _ins_ticker_coverage(ticker_data: dict) -> list:
+    """Analyse ticker coverage and generate recommendations."""
+    recs = []
+    section_sizes = {k: len(v) for k, v in ticker_data.items()}
+    total = sum(section_sizes.values())
+
+    # Coverage balance
+    max_sec = max(section_sizes, key=section_sizes.get)
+    min_sec = min(section_sizes, key=section_sizes.get)
+    recs.append({
+        "type": "Coverage",
+        "priority": "Medium",
+        "color": "4f8ef7",
+        "title": f"Ticker distribution: {total} total across {len(ticker_data)} sections",
+        "body": (f"Largest: {max_sec} ({section_sizes[max_sec]}). "
+                 f"Smallest: {min_sec} ({section_sizes[min_sec]}). "
+                 f"Consider balancing coverage for consistent cross-section screening."),
+        "action": f"Expand '{min_sec}' section for better screening depth."
+    })
+
+    # Thin sections
+    thin = [(s, n) for s, n in section_sizes.items() if n < 15]
+    if thin:
+        recs.append({
+            "type": "Data Gap",
+            "priority": "High",
+            "color": "ff9800",
+            "title": f"{len(thin)} thin section(s) with < 15 tickers",
+            "body": ", ".join(f"{s} ({n})" for s, n in thin),
+            "action": "Add more validated tickers to these sections in validated_tickers.json."
+        })
+
+    return recs
+
+def _ins_performance(err_log: list, dm_data: dict) -> list:
+    """Generate performance insights from error and run logs."""
+    recs = []
+
+    # Error frequency
+    if len(err_log) > 5:
+        cats = {}
+        for e in err_log:
+            cats[e.get("context", "unknown")] = cats.get(e.get("context", "unknown"), 0) + 1
+        top = sorted(cats.items(), key=lambda x: -x[1])[:3]
+        recs.append({
+            "type": "Error Pattern",
+            "priority": "High",
+            "color": "ef5350",
+            "title": f"{len(err_log)} errors logged — top hotspots identified",
+            "body": " · ".join(f"{ctx} ({n}×)" for ctx, n in top),
+            "action": "Review these functions for network timeout handling or bad ticker symbols."
+        })
+
+    # Run history insights
+    runs = dm_data.get("runs", [])
+    if len(runs) >= 3:
+        recent_warns = sum(r.get("warnings", 0) for r in runs[:5])
+        if recent_warns > 10:
+            recs.append({
+                "type": "Trend",
+                "priority": "Medium",
+                "color": "ffd600",
+                "title": f"{recent_warns} warnings across last {min(5,len(runs))} health runs",
+                "body": "Warning count is elevated. This may indicate intermittent data feed issues.",
+                "action": "Run a targeted health check and review Warning alerts."
+            })
+
+    # Clean bill of health
+    if not recs:
+        recs.append({
+            "type": "Performance",
+            "priority": "Low",
+            "color": "00c853",
+            "title": "No performance issues detected",
+            "body": "Error log is clean. App is running within expected parameters.",
+            "action": "Continue monitoring. Run health checks periodically."
+        })
+
+    return recs
+
+def _ins_optimisation() -> list:
+    """Static best-practice optimisation recommendations."""
+    return [
+        {
+            "type": "Cache",
+            "priority": "Medium",
+            "color": "26c6da",
+            "title": "Price cache TTL is 3600s (1 hour)",
+            "body": ("During high-volatility sessions (budget days, Fed meetings), "
+                     "stale 1-hour-old prices can mislead. "
+                     "Consider reducing to 1800s for India/US sections."),
+            "action": "Change @st.cache_data(ttl=3600) to ttl=1800 for get_price_data()."
+        },
+        {
+            "type": "UX",
+            "priority": "Low",
+            "color": "9c27b0",
+            "title": "Stock scoring scans top 35 tickers per section",
+            "body": ("The _compute_stock_scores() function samples the first 35 tickers. "
+                     "India has 184 tickers — 149 are never scored unless selected manually."),
+            "action": "Consider adding a 'Score All' toggle or rotating sample window daily."
+        },
+        {
+            "type": "Resilience",
+            "priority": "Medium",
+            "color": "ff9800",
+            "title": "forecast_history.json resets on Streamlit Cloud redeployment",
+            "body": ("Community Cloud does not persist local files across restarts. "
+                     "Forecast history is lost on every redeploy."),
+            "action": "Use st.session_state for in-memory persistence, or export JSON regularly via Dev Monitor."
+        },
+        {
+            "type": "Data",
+            "priority": "Low",
+            "color": "4f8ef7",
+            "title": "yfinance rate limits: ~2000 requests/hour per IP",
+            "body": ("During market hours with auto-refresh every 5s and multiple users, "
+                     "rate limits may cause fetch failures. safe_run() handles these gracefully."),
+            "action": "Consider adding exponential backoff or request deduplication for multi-user scale."
+        },
+        {
+            "type": "SEO / Branding",
+            "priority": "Low",
+            "color": "00c853",
+            "title": "page_title still shows v3.5 — update to v4.2",
+            "body": "st.set_page_config(page_title=...) still references an older version string.",
+            "action": "Update page_title to 'Global Stock Intelligence v4.2' in set_page_config()."
+        },
+    ]
+
+def render_insights_manager(ticker_data: dict):
+    """App performance insights and actionable recommendations."""
+    st.markdown("""
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px">
+        <div style="font-size:1.5rem">💡</div>
+        <div>
+            <div style="font-size:1.1rem;font-weight:900;color:#c8d6f0">Insights Manager</div>
+            <div style="font-size:0.78rem;color:#4b6080">
+                App performance · Coverage gaps · Optimisation recommendations
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    err_log = list(st.session_state.get("app_error_log", []))
+    dm_data = _dm_load()
+
+    # ── Gather all insights ───────────────────────────────────────
+    all_recs = (
+        _ins_ticker_coverage(ticker_data) +
+        _ins_performance(err_log, dm_data) +
+        _ins_optimisation()
+    )
+
+    # ── Summary KPIs ──────────────────────────────────────────────
+    pri_map  = {"High": 0, "Medium": 1, "Low": 2}
+    n_high   = sum(1 for r in all_recs if r["priority"] == "High")
+    n_med    = sum(1 for r in all_recs if r["priority"] == "Medium")
+    n_low    = sum(1 for r in all_recs if r["priority"] == "Low")
+    total_t  = sum(len(v) for v in ticker_data.values())
+
+    k1,k2,k3,k4 = st.columns(4, gap="small")
+    for col, val, label, color in [
+        (k1, n_high,   "High Priority",  "ef5350"),
+        (k2, n_med,    "Medium Priority","ffd600"),
+        (k3, n_low,    "Low Priority",   "00c853"),
+        (k4, total_t,  "Tickers Tracked","4f8ef7"),
+    ]:
+        col.markdown(f"""
+        <div style="background:#0d1117;border:1px solid #{color}44;border-radius:10px;
+                    padding:12px;text-align:center">
+            <div style="font-size:1.5rem;font-weight:900;color:#{color}">{val}</div>
+            <div style="font-size:0.65rem;color:#4b6080;text-transform:uppercase;
+                        letter-spacing:1px;margin-top:3px">{label}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    # ── Filter tabs ───────────────────────────────────────────────
+    tab_all, tab_high, tab_med, tab_low = st.tabs([
+        f"All ({len(all_recs)})",
+        f"🔴 High ({n_high})",
+        f"🟡 Medium ({n_med})",
+        f"🟢 Low ({n_low})",
+    ])
+
+    def _render_recs(items):
+        if not items:
+            st.info("No insights in this category.")
+            return
+        for r in sorted(items, key=lambda x: pri_map.get(x["priority"], 3)):
+            pri_color = {"High":"ef5350","Medium":"ffd600","Low":"00c853"}.get(r["priority"],"4b6080")
+            st.markdown(f"""
+            <div style="background:#080f1a;border:1px solid #{r["color"]}44;
+                         border-left:4px solid #{r["color"]};border-radius:0 10px 10px 0;
+                         padding:14px 16px;margin:7px 0">
+                <div style="display:flex;justify-content:space-between;
+                            align-items:flex-start;margin-bottom:6px">
+                    <div style="font-size:0.84rem;font-weight:800;color:#{r["color"]}">
+                        {r["title"]}
+                    </div>
+                    <span style="background:#{pri_color}22;border:1px solid #{pri_color}44;
+                                 border-radius:12px;padding:2px 10px;font-size:0.65rem;
+                                 color:#{pri_color};white-space:nowrap;margin-left:10px">
+                        {r["priority"]}
+                    </span>
+                </div>
+                <div style="font-size:0.76rem;color:#8a91a8;
+                            line-height:1.6;margin-bottom:8px">{r["body"]}</div>
+                <div style="background:#{r["color"]}12;border-radius:6px;
+                            padding:6px 10px;font-size:0.72rem;color:#{r["color"]}">
+                    💬 <b>Action:</b> {r["action"]}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    with tab_all:  _render_recs(all_recs)
+    with tab_high: _render_recs([r for r in all_recs if r["priority"]=="High"])
+    with tab_med:  _render_recs([r for r in all_recs if r["priority"]=="Medium"])
+    with tab_low:  _render_recs([r for r in all_recs if r["priority"]=="Low"])
+
+    # ── Ticker section deep-dive ──────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📊 Section Coverage Detail")
+    rows = []
+    for sec, tickers in ticker_data.items():
+        syms = list(tickers.values())
+        rows.append({
+            "Section":     sec,
+            "Tickers":     len(tickers),
+            "Status":      "✅ Good" if len(tickers)>=15 else "⚠️ Thin",
+            "Sample":      ", ".join(syms[:4]) + ("…" if len(syms)>4 else ""),
+        })
+    st.dataframe(_pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+@st.dialog("  Welcome to Global Stock Intelligence", width="large")
+def render_welcome_modal():
+    """First-time capability showcase. Triggered once per device session."""
+    st.markdown(f"""
+    <div style="text-align:center;padding:4px 0 18px 0">
+        <div style="font-size:2.2rem;margin-bottom:4px">📈</div>
+        <div style="font-size:1.05rem;font-weight:900;color:#c8d6f0;letter-spacing:0.5px">
+            Global Stock Intelligence <span style="color:#4f8ef7">v4.1</span>
+        </div>
+        <div style="font-size:0.80rem;color:#4b6080;margin-top:4px">
+            Real-time market analytics · AI-assisted scoring · Geopolitical intelligence
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── 3 Page cards ──────────────────────────────────────────────
+    c1, c2, c3 = st.columns(3, gap="medium")
+    pages = [
+        (c1, "🏠", "Home", "#4f8ef7",
+         "Live global index snapshot, top movers, daily market brief, and breaking news — all in one view.",
+         ["8 global indices", "Top gainers & losers", "Live news ticker", "AI chatter feed"]),
+        (c2, "📊", "Investor's Dashboard", "#00c853",
+         "Deep-dive into any stock across 9 market sections with technical analysis, AI scoring, and forecasts.",
+         ["10 KPI signal panel", "Candlestick + MACD + RSI", "Monte Carlo forecast", "Peer comparison"]),
+        (c3, "🌍", "Global Intelligence", "#ff9800",
+         "Understand how global events impact your portfolio through impact chains and live geopolitical feeds.",
+         ["West Asia conflict chain", "AI job market analysis", "WorldMonitor live map", "Impact on India markets"]),
+    ]
+    for col, icon, title, color, desc, features in pages:
+        with col:
+            feat_html = "".join(
+                f'<div style="font-size:0.70rem;color:#6b7a90;padding:2px 0">✦ {f}</div>'
+                for f in features
+            )
+            st.markdown(f"""
+            <div style="background:{color}0d;border:1px solid {color}44;border-radius:12px;
+                        padding:14px 12px;height:260px;overflow:hidden">
+                <div style="font-size:1.4rem;margin-bottom:6px">{icon}</div>
+                <div style="font-size:0.84rem;font-weight:900;color:{color};
+                            margin-bottom:8px">{title}</div>
+                <div style="font-size:0.74rem;color:#8a91a8;line-height:1.55;
+                            margin-bottom:10px">{desc}</div>
+                {feat_html}
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    # ── Ticker universe stats ─────────────────────────────────────
+    st.markdown("""
+    <div style="background:#0d1117;border:1px solid #1f2d40;border-radius:10px;
+                padding:12px 18px;margin:8px 0">
+        <div style="font-size:0.68rem;color:#3d5272;text-transform:uppercase;
+                    letter-spacing:1.2px;margin-bottom:8px">Ticker Universe</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <span style="background:#4f8ef718;border:1px solid #4f8ef744;border-radius:20px;
+                         padding:3px 12px;font-size:0.74rem;color:#4f8ef7">🇮🇳 India · 184</span>
+            <span style="background:#00c85318;border:1px solid #00c85344;border-radius:20px;
+                         padding:3px 12px;font-size:0.74rem;color:#00c853">🇺🇸 USA · 89</span>
+            <span style="background:#ff980018;border:1px solid #ff980044;border-radius:20px;
+                         padding:3px 12px;font-size:0.74rem;color:#ff9800">🇪🇺 Europe · 35</span>
+            <span style="background:#e040fb18;border:1px solid #e040fb44;border-radius:20px;
+                         padding:3px 12px;font-size:0.74rem;color:#e040fb">🇨🇳 China · 21</span>
+            <span style="background:#26c6da18;border:1px solid #26c6da44;border-radius:20px;
+                         padding:3px 12px;font-size:0.74rem;color:#26c6da">📦 ETFs · 40</span>
+            <span style="background:#ffca2818;border:1px solid #ffca2844;border-radius:20px;
+                         padding:3px 12px;font-size:0.74rem;color:#ffca28">🛢️ Commodities · 12</span>
+            <span style="background:#ef535018;border:1px solid #ef535044;border-radius:20px;
+                         padding:3px 12px;font-size:0.74rem;color:#ef5350">📈 Indices · 16</span>
+            <span style="background:#66bb6a18;border:1px solid #66bb6a44;border-radius:20px;
+                         padding:3px 12px;font-size:0.74rem;color:#66bb6a">💵 Debt & Rates · 13</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Disclaimer ────────────────────────────────────────────────
+    st.markdown("""
+    <div style="font-size:0.68rem;color:#3d5272;text-align:center;
+                padding:10px 0 4px 0;line-height:1.6">
+        📌 Data sourced from public market feeds · Refreshes every 10 seconds when market is open<br>
+        ⚠️ Not SEBI/SEC-registered investment advice · For educational and informational purposes only
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # ── CTA button ────────────────────────────────────────────────
+    col_l, col_btn, col_r = st.columns([2, 3, 2])
+    with col_btn:
+        if st.button("🚀  Start Exploring →",
+                     use_container_width=True,
+                     type="primary"):
+            st.session_state["app_onboarded"] = True
+            st.rerun()
+
+
 def render_homepage(cb: int):
     """Dashboard homepage — global snapshot, index overview, quick-access cards."""
     now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
@@ -1834,10 +2479,20 @@ with st.sidebar:
     st.markdown("---")
 
     # ── Navigation (top, horizontal) ─────────────────────────────────────
+    # ── First-time onboarding modal ─────────────────────
+    if not st.session_state.get("app_onboarded", False):
+        render_welcome_modal()
+
+    # ── Sync nav with session_state so auto-jump works ──────────
+    _nav_pages = ["🏠 Home", "📊 Investor's Dashboard",
+                  "🌍 Global Intelligence", "🔧 Dev Monitor", "💡 Insights"]
+    _default_page = st.session_state.get("_active_page", "🏠 Home")
+    _nav_index = _nav_pages.index(_default_page) if _default_page in _nav_pages else 0
     try:
         active_page = st.radio(
             "Navigate",
-            ["🏠 Home", "📊 Investor's Dashboard", "🌍 Global Intelligence"],
+            _nav_pages,
+            index=_nav_index,
             label_visibility="collapsed",
             horizontal=True,
             key="nav_radio",
@@ -1845,11 +2500,23 @@ with st.sidebar:
     except TypeError:  # Streamlit < 1.18 fallback
         active_page = st.radio(
             "🧭 Navigate",
-            ["🏠 Home", "📊 Investor's Dashboard", "🌍 Global Intelligence"],
+            _nav_pages,
             key="nav_radio",
         )
+    st.session_state["_active_page"] = active_page  # keep in sync
     st.markdown("---")
 
+    # ── Unread alert badge ───────────────────────────────────
+    _dm_sidebar  = _dm_load()
+    _unread_cnt  = sum(1 for _a in _dm_sidebar.get("alerts", [])
+                       if not _a.get("read", True))
+    if _unread_cnt > 0:
+        st.markdown(
+            f'<div style="background:#ef535018;border:1px solid #ef535044;'
+            f'border-radius:8px;padding:6px 12px;font-size:0.74rem;'
+            f'color:#ef5350;margin-bottom:8px">'
+            f'🔴 {_unread_cnt} unread alert(s) — open 🔧 Dev Monitor</div>',
+            unsafe_allow_html=True)
     country          = st.selectbox("🌍 Market Country", list(ALL_TICKERS.keys()))
     country_tickers  = ALL_TICKERS.get(country, {})
     country_groups   = GROUPS.get(country, {})
@@ -1885,6 +2552,12 @@ with st.sidebar:
 
     stock_names   = list(filtered.keys())
     selected_name = st.selectbox("📊 Select Stock", stock_names) if stock_names else None
+    # Auto-jump: if user picks a stock and is not on Dashboard, switch page
+    if (selected_name
+            and st.session_state.get("_active_page", "🏠 Home")
+                != "📊 Investor's Dashboard"):
+        st.session_state["_active_page"] = "📊 Investor's Dashboard"
+        st.rerun()
 
     if not selected_name:
         st.error("❌ No stocks available. Choose a different group or country.")
@@ -1911,7 +2584,8 @@ with st.sidebar:
     st.markdown("---")
     render_version_log()
     render_error_log()
-    auto_refresh = st.checkbox("⏱ Auto-refresh (live when market open)")
+    auto_refresh = st.checkbox("⏱ Auto-refresh (live when market open)",
+                               value=_ar_default)
     st.caption(f"🕐 {datetime.now().strftime('%d %b %Y %H:%M')}")
     st.caption("⚠️ Not investment advice.")
 
@@ -1919,6 +2593,8 @@ with st.sidebar:
 #  COMPUTE MARKET STATUS + CACHE BUSTER  (before any data load)
 # ─────────────────────────────────────────────────────────────
 market_open     = is_market_open(country)
+# Default auto-refresh ON if selected market is currently open
+_ar_default  = bool(market_open)
 status_lbl, s_col = market_status_label(country)
 cb      = int(time.time() // 10) if (auto_refresh and market_open) else 0
 cur_sym = CURRENCY.get(country, "")
@@ -1945,6 +2621,12 @@ if active_page == "🏠 Home":
 
 if active_page == "🌍 Global Intelligence":
     render_global_intelligence(cur_sym, cb)
+
+elif active_page == "🔧 Dev Monitor":
+    render_dev_monitor(ALL_TICKERS)
+
+elif active_page == "💡 Insights":
+    render_insights_manager(ALL_TICKERS)
     st.stop()
 
 
@@ -2402,6 +3084,12 @@ else:
 # ─────────────────────────────────────────────────────────────
 #  KPI GLOSSARY
 # ─────────────────────────────────────────────────────────────
+# Re-open welcome guide
+if st.button("❓  App Guide & Capabilities",
+             use_container_width=True,
+             help="Re-open the capability showcase"):
+    st.session_state["app_onboarded"] = False
+    st.rerun()
 st.markdown("---")
 with st.expander("📖 KPI Glossary"):
     gc = st.columns(2)
