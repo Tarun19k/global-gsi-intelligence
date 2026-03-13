@@ -33,3 +33,6 @@ streamlit run app_v4_compat.py
 
 ## Disclaimer
 Not SEBI/SEC-registered investment advice. For educational and informational purposes only.
+
+## Local Dev Setup
+VS Code + Git workflow configured on 13 March 2026.
